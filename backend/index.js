@@ -7,7 +7,7 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-// Use the port from .env or default to 5000
+// Use the port from .env or default to 5001
 const PORT = 5001;
 
 // Initialize and connect to SQLite database
@@ -51,31 +51,29 @@ function insertExpiryIntoDB(productName, expiryInfo) {
   });
 }
 
-// Function to call the LLM (using OpenAI API) for expiry information
 async function getExpiryFromLLM(productName) {
-  // Construct a prompt to get a simple expiry period (in days)
-  const prompt = `Provide the estimated expiry period (in days) for the grocery product "${productName}". Only provide the number of days.`;
-
-  try {
-    const response = await axios.post('https://api.openai.com/v1/completions', {
-      model: "text-davinci-003",
-      prompt: prompt,
-      max_tokens: 10,
-      temperature: 0.5,
-    }, {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-      }
-    });
-    // Extract and trim the text from the API response
-    const expiryInfo = response.data.choices[0].text.trim();
-    return expiryInfo;
-  } catch (error) {
-    console.error("Error calling LLM API:", error);
-    throw error;
+    const prompt = `Provide the estimated expiry period (in days) for the grocery product "${productName}". Only provide the number of days.`;
+  
+    try {
+      const response = await axios.post('https://api.openai.com/v1/completions', {
+        model: "gpt-3.5-turbo-instruct",
+        prompt: prompt,
+        max_tokens: 10,
+        temperature: 0.5,
+      }, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+        }
+      });
+      const expiryInfo = response.data.choices[0].text.trim();
+      return expiryInfo;
+    } catch (error) {
+      console.error("Error calling LLM API:", error);
+      throw error;
+    }
   }
-}
+  
 
 // API endpoint: Checks DB first; if not found, calls the LLM.
 app.post('/api/get-expiry', async (req, res) => {
