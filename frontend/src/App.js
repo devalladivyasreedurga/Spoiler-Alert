@@ -1,35 +1,41 @@
-// frontend/src/App.js
 import React, { useState } from 'react';
 import './App.css';
 
 function App() {
-  const [item, setItem] = useState('');
-  const [expiry, setExpiry] = useState(null);
+  const [input, setInput] = useState('');
+  const [expiryInfo, setExpiryInfo] = useState('');
+  const [imageUrl, setImageUrl] = useState('');
+  const [source, setSource] = useState('');
+  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError('');
+    setExpiryInfo('');
+    setImageUrl('');
+    setSource('');
     setLoading(true);
-    setError(null);
-    setExpiry(null);
-    
+
     try {
       const response = await fetch('/api/get-expiry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productName: item })
+        body: JSON.stringify({ productName: input })
       });
       
       if (!response.ok) {
-        throw new Error('Error fetching expiry information');
+        throw new Error('Failed to fetch data');
       }
       
       const data = await response.json();
-      setExpiry(data.expiryInfo);
+      setExpiryInfo(data.expiryInfo);
+      setImageUrl(data.imageUrl);
+      setSource(data.source);
     } catch (err) {
       setError(err.message);
     }
+
     setLoading(false);
   };
 
@@ -39,20 +45,30 @@ function App() {
       <form onSubmit={handleSubmit}>
         <input
           type="text"
-          placeholder="Enter grocery item name"
-          value={item}
-          onChange={(e) => setItem(e.target.value)}
+          placeholder="Enter food product name"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
           required
         />
         <button type="submit" disabled={loading}>
-          {loading ? 'Loading...' : 'Get Expiry Time'}
+          {loading ? 'Loading...' : 'Check Expiry'}
         </button>
       </form>
-      {error && <p style={{ color: 'red' }}>{error}</p>}
-      {expiry && (
-        <div>
-          <h2>Expiry Information:</h2>
-          <p>{expiry} days</p>
+      
+      {error && <p className="error">{error}</p>}
+      
+      {expiryInfo && (
+        <div className="result">
+          <h2>{input}</h2>
+          <p>Expires in: {expiryInfo} days</p>
+          {imageUrl && (
+            <img 
+              src={imageUrl} 
+              alt={`${input} illustration`} 
+              style={{ maxWidth: '400px', marginTop: '20px' }} 
+            />
+          )}
+          <p>Data source: {source}</p>
         </div>
       )}
     </div>

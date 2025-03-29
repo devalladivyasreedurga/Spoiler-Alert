@@ -3,12 +3,13 @@ require('dotenv').config();
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const axios = require('axios');
+const puppeteer = require('puppeteer');
 
 const app = express();
 app.use(express.json());
 
 // Use the port from .env or default to 5001
-const PORT = 5001;
+const PORT = process.env.PORT || 5001;
 
 // Initialize and connect to SQLite database
 const db = new sqlite3.Database('./expiry.db', (err) => {
@@ -22,6 +23,7 @@ const db = new sqlite3.Database('./expiry.db', (err) => {
       name TEXT UNIQUE,
       expiry_info TEXT
     )`);
+    // (Optional) Create a table for caching image URLs if desired
   }
 });
 
@@ -51,31 +53,64 @@ function insertExpiryIntoDB(productName, expiryInfo) {
   });
 }
 
+// Function to call the LLM (using OpenAI API) for expiry information
 async function getExpiryFromLLM(productName) {
-    const prompt = `Provide the estimated expiry period (in days) for the grocery product "${productName}". Only provide the number of days.`;
-  
-    try {
-      const response = await axios.post('https://api.openai.com/v1/completions', {
-        model: "gpt-3.5-turbo-instruct",
-        prompt: prompt,
-        max_tokens: 10,
-        temperature: 0.5,
-      }, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-        }
-      });
-      const expiryInfo = response.data.choices[0].text.trim();
-      return expiryInfo;
-    } catch (error) {
-      console.error("Error calling LLM API:", error);
-      throw error;
-    }
-  }
-  
+  const prompt = `Provide the estimated expiry period (in days) for the grocery product "${productName}". Only provide the number of days.`;
 
-// API endpoint: Checks DB first; if not found, calls the LLM.
+  try {
+    const response = await axios.post('https://api.openai.com/v1/completions', {
+      model: "gpt-3.5-turbo-instruct",
+      prompt: prompt,
+      max_tokens: 10,
+      temperature: 0.5,
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+      }
+    });
+    const expiryInfo = response.data.choices[0].text.trim();
+    return expiryInfo;
+  } catch (error) {
+    console.error("Error calling LLM API:", error);
+    throw error;
+  }
+}
+
+// Function to scrape an image URL from Adobe Stock using Puppeteer
+async function getFoodImage(foodName) {
+  // Construct the Adobe Stock search URL with "cartoon" appended for style.
+  const searchUrl = `https://stock.adobe.com/search?k=${encodeURIComponent(foodName + " cartoon")}`;
+
+  try {
+    const browser = await puppeteer.launch({ headless: true });
+    const page = await browser.newPage();
+    // Go to the Adobe Stock search page and wait until network is idle
+    await page.goto(searchUrl, { waitUntil: 'networkidle2' });
+    // Wait for image elements to load
+    await page.waitForSelector('img');
+
+    // Evaluate the page to collect image URLs and filter out likely logos
+    const imageUrl = await page.evaluate(() => {
+      const images = Array.from(document.querySelectorAll('img'));
+      const validImages = images.filter(img => {
+        const src = img.src.toLowerCase();
+        // Adjust this condition based on Adobe Stock's structure.
+        return src && src.includes('ftcdn.net') && !src.includes('logo') && !src.includes('funny') && !src.includes('character');
+      });
+      return validImages.length > 0 ? validImages[1].src : null;
+    });
+
+    await browser.close();
+    return imageUrl;
+  } catch (error) {
+    console.error("Error scraping image:", error);
+    return null;
+  }
+}
+
+// API endpoint: Fetch the image first and then try getting expiry details.
+// If expiry lookup fails, it doesn't block returning the image.
 app.post('/api/get-expiry', async (req, res) => {
   const { productName } = req.body;
   if (!productName) {
@@ -83,19 +118,31 @@ app.post('/api/get-expiry', async (req, res) => {
   }
 
   try {
-    // Check for expiry info in the database
-    let expiryInfo = await getExpiryFromDB(productName);
-    if (expiryInfo) {
-      return res.json({ productName, expiryInfo, source: "database" });
+    // Start by fetching the image URL regardless of expiry info.
+    const imagePromise = getFoodImage(productName);
+
+    // Retrieve expiry info from DB, or if not present, call the LLM.
+    let expiryInfo;
+    let source;
+    try {
+      expiryInfo = await getExpiryFromDB(productName);
+      source = "database";
+      if (!expiryInfo) {
+        expiryInfo = await getExpiryFromLLM(productName);
+        source = "LLM";
+        await insertExpiryIntoDB(productName, expiryInfo);
+      }
+    } catch (err) {
+      console.error("Error retrieving expiry details:", err);
+      expiryInfo = "Unavailable";
+      source = "error";
     }
 
-    // Call the LLM to get expiry info if not found in DB
-    expiryInfo = await getExpiryFromLLM(productName);
+    // Wait for the image URL retrieval to complete.
+    const imageUrl = await imagePromise;
 
-    // Store the new info in the database
-    await insertExpiryIntoDB(productName, expiryInfo);
-
-    res.json({ productName, expiryInfo, source: "LLM" });
+    // Return response: even if expiryInfo is unavailable, imageUrl is provided.
+    res.json({ productName, imageUrl, expiryInfo, source });
   } catch (error) {
     console.error("Error in /api/get-expiry:", error);
     res.status(500).json({ error: "Internal Server Error" });
